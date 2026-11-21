@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "package": "HideCornerIcons",
+  "name": "Hide Corner Icons",
+  "version": "1.0.0",
+  "namespace": "local.hidecornericons",
+  "description": "Hides the Blish HUD corner icons in the top-left of the screen and nothing else.",
+  "contributors": [],
+  "dependencies": {
+    "bh.blishhud": "^1.0.0"
+  }
+}
