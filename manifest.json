@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "package": "HideCornerIcons",
   "name": "Hide Corner Icons",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "namespace": "local.hidecornericons",
   "description": "Hides or fades the Blish HUD corner icons, and can hide on-screen elements from other modules that you pick.",
   "contributors": [],

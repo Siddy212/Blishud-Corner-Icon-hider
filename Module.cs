@@ -32,6 +32,7 @@ namespace HideCornerIcons {
         private SettingEntry<KeyBinding> _toggleKey;
         private SettingEntry<bool> _hidePicked;
         private SettingEntry<KeyBinding> _pickKey;
+        private SettingEntry<bool> _pickNow;
 
         private readonly DirectoriesManager _directories;
 
@@ -40,6 +41,8 @@ namespace HideCornerIcons {
         private readonly List<PickedElement> _picked = new List<PickedElement>();
         private readonly List<Control> _hiddenOthers = new List<Control>();
         private double _findTimer;
+        private PickOverlay _pickOverlay;
+        private PickOverlay _overlayToDispose;
 
         // Icons this module hid, so we only restore what we changed.
         private readonly HashSet<CornerIcon> _hidden = new HashSet<CornerIcon>();
@@ -98,6 +101,12 @@ namespace HideCornerIcons {
                 () => "Hide picked elements from other modules",
                 () => "Keeps elements you picked with the pick key (for example another module's hotbar) hidden. Turn off to bring them back.");
 
+            _pickNow = settings.DefineSetting(
+                "PickNow",
+                false,
+                () => "Pick an element to hide now",
+                () => "Tick this, then click the element on screen that you want hidden (works even if the pick key doesn't). It unticks itself.");
+
             _pickKey = settings.DefineSetting(
                 "PickKey",
                 new KeyBinding(ModifierKeys.Ctrl | ModifierKeys.Alt, Keys.P),
@@ -112,6 +121,9 @@ namespace HideCornerIcons {
             _toggleKey.Value.Activated += OnToggleKey;
             _pickKey.Value.Enabled = true;
             _pickKey.Value.Activated += OnPickKey;
+            _pickNow.SettingChanged += OnPickNowChanged;
+
+            Notify("Hide Corner Icons 1.1.1 loaded.");
 
             base.OnModuleLoaded(e);
         }
@@ -121,6 +133,11 @@ namespace HideCornerIcons {
         }
 
         protected override void Update(GameTime gameTime) {
+            if (_overlayToDispose != null) {
+                _overlayToDispose.Dispose();
+                _overlayToDispose = null;
+            }
+
             EnforcePicked();
 
             _findTimer += gameTime.ElapsedGameTime.TotalMilliseconds;
@@ -199,39 +216,66 @@ namespace HideCornerIcons {
         // Hiding elements that belong to other Blish HUD modules
         // =====================================================================
 
+        private void OnPickNowChanged(object sender, ValueChangedEventArgs<bool> e) {
+            if (!_pickNow.Value) return;
+
+            _pickNow.Value = false;
+            BeginPick();
+        }
+
         private void OnPickKey(object sender, EventArgs e) {
-            var active = GameService.Input.Mouse.ActiveControl;
-            if (active == null) {
-                Notify("Nothing under the cursor. Hover over the element first.");
+            BeginPick();
+        }
+
+        private void BeginPick() {
+            if (_pickOverlay != null) return;
+
+            _pickOverlay = new PickOverlay {
+                Message = "Click the element you want to hide. Right-click to finish."
+            };
+            _pickOverlay.Clicked = HideElementAt;
+            _pickOverlay.Finished = EndPick;
+        }
+
+        private void EndPick() {
+            _overlayToDispose = _pickOverlay;
+            _pickOverlay = null;
+        }
+
+        // Finds the smallest on-screen element under the click (ignoring the mouse report) and hides it.
+        private void HideElementAt(Point point) {
+            Control best = null;
+            int bestArea = int.MaxValue;
+
+            foreach (var child in GameService.Graphics.SpriteScreen.Children.ToList()) {
+                if (ReferenceEquals(child, _pickOverlay) || child is CornerIcon || !child.Visible) continue;
+                if (child.Width <= 0 || child.Height <= 0) continue;
+                if (!child.Bounds.Contains(point)) continue;
+
+                int area = child.Width * child.Height;
+                Logger.Info($"Pick candidate: {child.GetType().FullName} ({child.Width}x{child.Height})");
+
+                if (area < bestArea) {
+                    best = child;
+                    bestArea = area;
+                }
+            }
+
+            if (best == null) {
+                _pickOverlay.Message = "Nothing found there. Click right on the element, or right-click to finish.";
                 return;
             }
 
-            // Walk up to the top-level element sitting directly on the screen.
-            Control top = active;
-            while (top.Parent != null && !ReferenceEquals(top.Parent, GameService.Graphics.SpriteScreen)) {
-                top = top.Parent;
-            }
+            string typeName = best.GetType().FullName;
+            _picked.RemoveAll(p => p.TypeName == typeName && Math.Abs(p.W - best.Width) <= 2 && Math.Abs(p.H - best.Height) <= 2);
+            _picked.Add(new PickedElement { TypeName = typeName, W = best.Width, H = best.Height });
 
-            if (top.Parent == null) {
-                Notify("That can't be hidden.");
-                return;
-            }
-
-            if (top is CornerIcon) {
-                Notify("Corner icons are handled by the settings above.");
-                return;
-            }
-
-            string typeName = top.GetType().FullName;
-            _picked.RemoveAll(p => p.TypeName == typeName && Math.Abs(p.W - top.Width) <= 2 && Math.Abs(p.H - top.Height) <= 2);
-            _picked.Add(new PickedElement { TypeName = typeName, W = top.Width, H = top.Height });
-
-            if (!_hiddenOthers.Contains(top)) _hiddenOthers.Add(top);
-            top.Visible = false;
+            if (!_hiddenOthers.Contains(best)) _hiddenOthers.Add(best);
+            best.Visible = false;
             SavePicked();
 
-            Logger.Info($"Hiding element: {typeName} ({top.Width}x{top.Height})");
-            Notify($"Hidden: {typeName}");
+            Logger.Info($"Hiding element: {typeName} ({best.Width}x{best.Height})");
+            _pickOverlay.Message = $"Hidden: {typeName} ({best.Width}x{best.Height}). Click another, or right-click to finish.";
         }
 
         private static void Notify(string text) {
@@ -321,6 +365,13 @@ namespace HideCornerIcons {
                 _pickKey.Value.Activated -= OnPickKey;
                 _pickKey.Value.Enabled = false;
             }
+
+            if (_pickNow != null) _pickNow.SettingChanged -= OnPickNowChanged;
+
+            _pickOverlay?.Dispose();
+            _overlayToDispose?.Dispose();
+            _pickOverlay = null;
+            _overlayToDispose = null;
 
             RestoreOthers();
 
