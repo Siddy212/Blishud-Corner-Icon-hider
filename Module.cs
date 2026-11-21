@@ -89,9 +89,7 @@ namespace HideCornerIcons {
             if (_hidden.Count == 0) return;
 
             foreach (var icon in _hidden) {
-                if (!icon.IsDisposed) {
-                    icon.Visible = true;
-                }
+                icon.Visible = true;
             }
 
             _hidden.Clear();
@@ -115,9 +113,7 @@ namespace HideCornerIcons {
 
         private void RestoreOpacity() {
             foreach (var pair in _originalOpacity) {
-                if (!pair.Key.IsDisposed) {
-                    pair.Key.Opacity = pair.Value;
-                }
+                pair.Key.Opacity = pair.Value;
             }
 
             _originalOpacity.Clear();
