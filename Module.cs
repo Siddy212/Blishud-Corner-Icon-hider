@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
+using System.IO;
+using System.Linq;
 using Blish_HUD;
 using Blish_HUD.Controls;
 using Blish_HUD.Input;
 using Blish_HUD.Modules;
+using Blish_HUD.Modules.Managers;
 using Blish_HUD.Settings;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
@@ -12,7 +15,8 @@ using Microsoft.Xna.Framework.Input;
 namespace HideCornerIcons {
 
     /// <summary>
-    /// Hides or fades every Blish HUD CornerIcon (the small icons in the top-left of the screen).
+    /// Hides or fades every Blish HUD CornerIcon (the small icons in the top-left of the screen),
+    /// and can also hide other on-screen elements from other Blish HUD modules that you pick.
     /// Deliberately adds no UI of its own - everything lives on the module's settings page.
     /// </summary>
     [Export(typeof(Module))]
@@ -26,6 +30,16 @@ namespace HideCornerIcons {
         private SettingEntry<float> _hoverOpacity;
         private SettingEntry<bool> _revealAll;
         private SettingEntry<KeyBinding> _toggleKey;
+        private SettingEntry<bool> _hidePicked;
+        private SettingEntry<KeyBinding> _pickKey;
+
+        private readonly DirectoriesManager _directories;
+
+        // Elements from other modules that you asked to hide (identified by type and size so it survives restarts).
+        private sealed class PickedElement { public string TypeName; public int W; public int H; }
+        private readonly List<PickedElement> _picked = new List<PickedElement>();
+        private readonly List<Control> _hiddenOthers = new List<Control>();
+        private double _findTimer;
 
         // Icons this module hid, so we only restore what we changed.
         private readonly HashSet<CornerIcon> _hidden = new HashSet<CornerIcon>();
@@ -35,7 +49,9 @@ namespace HideCornerIcons {
 
         [ImportingConstructor]
         public HideCornerIconsModule([Import("ModuleParameters")] ModuleParameters moduleParameters)
-            : base(moduleParameters) { }
+            : base(moduleParameters) {
+            _directories = moduleParameters.DirectoriesManager;
+        }
 
         protected override void DefineSettings(SettingCollection settings) {
             _hideIcons = settings.DefineSetting(
@@ -75,11 +91,27 @@ namespace HideCornerIcons {
                 new KeyBinding(ModifierKeys.Ctrl | ModifierKeys.Alt, Keys.H),
                 () => "Toggle key",
                 () => "Press to hide or show the corner icons.");
+
+            _hidePicked = settings.DefineSetting(
+                "HidePicked",
+                true,
+                () => "Hide picked elements from other modules",
+                () => "Keeps elements you picked with the pick key (for example another module's hotbar) hidden. Turn off to bring them back.");
+
+            _pickKey = settings.DefineSetting(
+                "PickKey",
+                new KeyBinding(ModifierKeys.Ctrl | ModifierKeys.Alt, Keys.P),
+                () => "Pick element key",
+                () => "Hover over an on-screen element from another Blish HUD module and press this to hide it.");
         }
 
         protected override void OnModuleLoaded(EventArgs e) {
+            LoadPicked();
+
             _toggleKey.Value.Enabled = true;
             _toggleKey.Value.Activated += OnToggleKey;
+            _pickKey.Value.Enabled = true;
+            _pickKey.Value.Activated += OnPickKey;
 
             base.OnModuleLoaded(e);
         }
@@ -89,6 +121,14 @@ namespace HideCornerIcons {
         }
 
         protected override void Update(GameTime gameTime) {
+            EnforcePicked();
+
+            _findTimer += gameTime.ElapsedGameTime.TotalMilliseconds;
+            if (_findTimer >= 250) {
+                _findTimer = 0;
+                FindPicked();
+            }
+
             // Run every frame so icons that modules add or re-show later are handled too.
             if (_hideIcons.Value) {
                 HideIcons();
@@ -155,11 +195,134 @@ namespace HideCornerIcons {
             _originalOpacity.Clear();
         }
 
+        // =====================================================================
+        // Hiding elements that belong to other Blish HUD modules
+        // =====================================================================
+
+        private void OnPickKey(object sender, EventArgs e) {
+            var active = GameService.Input.Mouse.ActiveControl;
+            if (active == null) {
+                Notify("Nothing under the cursor. Hover over the element first.");
+                return;
+            }
+
+            // Walk up to the top-level element sitting directly on the screen.
+            Control top = active;
+            while (top.Parent != null && !ReferenceEquals(top.Parent, GameService.Graphics.SpriteScreen)) {
+                top = top.Parent;
+            }
+
+            if (top.Parent == null) {
+                Notify("That can't be hidden.");
+                return;
+            }
+
+            if (top is CornerIcon) {
+                Notify("Corner icons are handled by the settings above.");
+                return;
+            }
+
+            string typeName = top.GetType().FullName;
+            _picked.RemoveAll(p => p.TypeName == typeName && Math.Abs(p.W - top.Width) <= 2 && Math.Abs(p.H - top.Height) <= 2);
+            _picked.Add(new PickedElement { TypeName = typeName, W = top.Width, H = top.Height });
+
+            if (!_hiddenOthers.Contains(top)) _hiddenOthers.Add(top);
+            top.Visible = false;
+            SavePicked();
+
+            Logger.Info($"Hiding element: {typeName} ({top.Width}x{top.Height})");
+            Notify($"Hidden: {typeName}");
+        }
+
+        private static void Notify(string text) {
+            ScreenNotification.ShowNotification(text);
+        }
+
+        // Every frame: keep picked elements hidden, even if their module tries to show them again.
+        private void EnforcePicked() {
+            if (_hiddenOthers.Count == 0) return;
+
+            if (!_hidePicked.Value) {
+                RestoreOthers();
+                return;
+            }
+
+            // Drop elements their module has removed.
+            _hiddenOthers.RemoveAll(c => c.Parent == null);
+
+            foreach (var c in _hiddenOthers) {
+                if (c.Visible) c.Visible = false;
+            }
+        }
+
+        // A few times a second: find elements matching saved picks (for example after a restart).
+        private void FindPicked() {
+            if (!_hidePicked.Value || _picked.Count == 0) return;
+
+            foreach (var child in GameService.Graphics.SpriteScreen.Children.ToList()) {
+                if (child is CornerIcon || _hiddenOthers.Contains(child)) continue;
+
+                string typeName = child.GetType().FullName;
+                foreach (var p in _picked) {
+                    if (p.TypeName == typeName && Math.Abs(p.W - child.Width) <= 2 && Math.Abs(p.H - child.Height) <= 2) {
+                        _hiddenOthers.Add(child);
+                        child.Visible = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void RestoreOthers() {
+            foreach (var c in _hiddenOthers) {
+                if (c.Parent != null) c.Visible = true;
+            }
+
+            _hiddenOthers.Clear();
+        }
+
+        private string PickedPath() {
+            return Path.Combine(_directories.GetFullDirectoryPath("hidecornericons"), "hidden_elements.txt");
+        }
+
+        private void LoadPicked() {
+            _picked.Clear();
+
+            try {
+                string path = PickedPath();
+                if (!File.Exists(path)) return;
+
+                foreach (var line in File.ReadAllLines(path)) {
+                    var parts = line.Split('|');
+                    if (parts.Length == 3 && int.TryParse(parts[1], out var w) && int.TryParse(parts[2], out var h)) {
+                        _picked.Add(new PickedElement { TypeName = parts[0], W = w, H = h });
+                    }
+                }
+            } catch (Exception ex) {
+                Logger.Warn(ex, "Could not read hidden elements list.");
+            }
+        }
+
+        private void SavePicked() {
+            try {
+                File.WriteAllLines(PickedPath(), _picked.Select(p => p.TypeName + "|" + p.W + "|" + p.H));
+            } catch (Exception ex) {
+                Logger.Warn(ex, "Could not save hidden elements list.");
+            }
+        }
+
         protected override void Unload() {
             if (_toggleKey != null) {
                 _toggleKey.Value.Activated -= OnToggleKey;
                 _toggleKey.Value.Enabled = false;
             }
+
+            if (_pickKey != null) {
+                _pickKey.Value.Activated -= OnPickKey;
+                _pickKey.Value.Enabled = false;
+            }
+
+            RestoreOthers();
 
             RestoreVisibility();
             RestoreOpacity();
