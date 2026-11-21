@@ -22,6 +22,9 @@ namespace HideCornerIcons {
 
         private SettingEntry<bool> _hideIcons;
         private SettingEntry<float> _iconOpacity;
+        private SettingEntry<bool> _hoverReveal;
+        private SettingEntry<float> _hoverOpacity;
+        private SettingEntry<bool> _revealAll;
         private SettingEntry<KeyBinding> _toggleKey;
 
         // Icons this module hid, so we only restore what we changed.
@@ -37,16 +40,35 @@ namespace HideCornerIcons {
         protected override void DefineSettings(SettingCollection settings) {
             _hideIcons = settings.DefineSetting(
                 "HideCornerIcons",
-                true,
-                () => "Hide corner icons",
-                () => "Completely hides the Blish HUD corner icons. Turn off to show them (at the opacity below).");
+                false,
+                () => "Hide corner icons completely",
+                () => "Fully hides the icons so they can't be seen or clicked. Leave off to use the opacity and hover options below.");
 
             _iconOpacity = settings.DefineSetting(
                 "IconOpacity",
-                0.4f,
+                0f,
                 () => "Icon opacity",
-                () => "How visible the corner icons are while they are shown. Lower is more transparent.");
-            _iconOpacity.SetRange(0.1f, 1f);
+                () => "How visible the icons are normally. 0% is invisible (but still clickable).");
+            _iconOpacity.SetRange(0f, 1f);
+
+            _hoverReveal = settings.DefineSetting(
+                "HoverReveal",
+                true,
+                () => "Reveal on hover",
+                () => "Fade an icon in to the hover opacity while your cursor is over it.");
+
+            _hoverOpacity = settings.DefineSetting(
+                "HoverOpacity",
+                1f,
+                () => "Hover opacity",
+                () => "How visible an icon becomes while your cursor is over it.");
+            _hoverOpacity.SetRange(0f, 1f);
+
+            _revealAll = settings.DefineSetting(
+                "RevealAll",
+                false,
+                () => "Reveal all icons together",
+                () => "Hovering any one icon reveals all of them, which helps you find invisible ones.");
 
             _toggleKey = settings.DefineSetting(
                 "ToggleKey",
@@ -96,13 +118,27 @@ namespace HideCornerIcons {
         }
 
         private void ApplyOpacity() {
-            float target = _iconOpacity.Value;
+            float idle = _iconOpacity.Value;
+            float hover = _hoverOpacity.Value;
+            bool reveal = _hoverReveal.Value;
+
+            bool anyHovered = false;
+            if (reveal && _revealAll.Value) {
+                foreach (var child in GameService.Graphics.SpriteScreen.Children) {
+                    if (child is CornerIcon c && c.MouseOver) {
+                        anyHovered = true;
+                        break;
+                    }
+                }
+            }
 
             foreach (var child in GameService.Graphics.SpriteScreen.Children) {
                 if (child is CornerIcon icon) {
                     if (!_originalOpacity.ContainsKey(icon)) {
                         _originalOpacity[icon] = icon.Opacity;
                     }
+
+                    float target = (reveal && (icon.MouseOver || anyHovered)) ? hover : idle;
 
                     if (Math.Abs(icon.Opacity - target) > 0.001f) {
                         icon.Opacity = target;
