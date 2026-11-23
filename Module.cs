@@ -389,7 +389,7 @@ namespace HideCornerIcons {
             foreach (var child in GameService.Graphics.SpriteScreen.Children.ToList()) {
                 if (ReferenceEquals(child, _pickOverlay) || child is CornerIcon || !child.Visible) continue;
                 if (child.Width <= 0 || child.Height <= 0) continue;
-                if (!child.Bounds.Contains(point)) continue;
+                if (!child.LocalBounds.Contains(point)) continue;
 
                 int area = child.Width * child.Height;
                 Logger.Info($"Pick candidate: {child.GetType().FullName} ({child.Width}x{child.Height})");
