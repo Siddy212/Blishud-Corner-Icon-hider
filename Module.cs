@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using Blish_HUD;
 using Blish_HUD.Controls;
 using Blish_HUD.Input;
@@ -10,6 +11,7 @@ using Blish_HUD.Modules;
 using Blish_HUD.Modules.Managers;
 using Blish_HUD.Settings;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 
 namespace HideCornerIcons {
@@ -33,6 +35,13 @@ namespace HideCornerIcons {
         private SettingEntry<bool> _hidePicked;
         private SettingEntry<KeyBinding> _pickKey;
         private SettingEntry<bool> _pickNow;
+        private SettingEntry<bool> _showLogo;
+        private SettingEntry<float> _logoOpacity;
+
+        // Our own corner icon: a small logo that opens Blish HUD's menu. Never hidden or faded by the rules below.
+        private CornerIcon _logoIcon;
+        private Texture2D _logoTexture;
+        private bool _logoFailed;
 
         private readonly DirectoriesManager _directories;
 
@@ -112,6 +121,19 @@ namespace HideCornerIcons {
                 new KeyBinding(ModifierKeys.Ctrl | ModifierKeys.Alt, Keys.P),
                 () => "Pick element key",
                 () => "Hover over an on-screen element from another Blish HUD module and press this to hide it.");
+
+            _showLogo = settings.DefineSetting(
+                "ShowLogo",
+                true,
+                () => "Show Blish HUD logo icon",
+                () => "Adds one small logo icon to the corner icon bar. Click it to open the Blish HUD window on its Settings tab. It is never hidden by the options above.");
+
+            _logoOpacity = settings.DefineSetting(
+                "LogoOpacity",
+                0.6f,
+                () => "Logo icon opacity",
+                () => "How visible the logo icon is normally. It becomes fully visible while your cursor is over it.");
+            _logoOpacity.SetRange(0.05f, 1f);
         }
 
         protected override void OnModuleLoaded(EventArgs e) {
@@ -123,7 +145,7 @@ namespace HideCornerIcons {
             _pickKey.Value.Activated += OnPickKey;
             _pickNow.SettingChanged += OnPickNowChanged;
 
-            Notify("Hide Corner Icons 1.1.1 loaded.");
+            Notify("Hide Corner Icons 1.2.0 loaded.");
 
             base.OnModuleLoaded(e);
         }
@@ -137,6 +159,8 @@ namespace HideCornerIcons {
                 _overlayToDispose.Dispose();
                 _overlayToDispose = null;
             }
+
+            UpdateLogo();
 
             EnforcePicked();
 
@@ -157,7 +181,7 @@ namespace HideCornerIcons {
 
         private void HideIcons() {
             foreach (var child in GameService.Graphics.SpriteScreen.Children) {
-                if (child is CornerIcon icon && icon.Visible) {
+                if (child is CornerIcon icon && icon.Visible && !ReferenceEquals(icon, _logoIcon)) {
                     _hidden.Add(icon);
                     icon.Visible = false;
                 }
@@ -182,7 +206,7 @@ namespace HideCornerIcons {
             bool anyHovered = false;
             if (reveal && _revealAll.Value) {
                 foreach (var child in GameService.Graphics.SpriteScreen.Children) {
-                    if (child is CornerIcon c && c.MouseOver) {
+                    if (child is CornerIcon c && !ReferenceEquals(c, _logoIcon) && c.MouseOver) {
                         anyHovered = true;
                         break;
                     }
@@ -190,7 +214,7 @@ namespace HideCornerIcons {
             }
 
             foreach (var child in GameService.Graphics.SpriteScreen.Children) {
-                if (child is CornerIcon icon) {
+                if (child is CornerIcon icon && !ReferenceEquals(icon, _logoIcon)) {
                     if (!_originalOpacity.ContainsKey(icon)) {
                         _originalOpacity[icon] = icon.Opacity;
                     }
@@ -210,6 +234,118 @@ namespace HideCornerIcons {
             }
 
             _originalOpacity.Clear();
+        }
+
+        // =====================================================================
+        // Logo icon that opens Blish HUD's menu
+        // =====================================================================
+
+        // Runs every frame on the main thread: creates, updates or removes the logo icon.
+        private void UpdateLogo() {
+            if (!_showLogo.Value) {
+                DisposeLogoIcon();
+                return;
+            }
+
+            if (_logoIcon == null && !_logoFailed) {
+                CreateLogoIcon();
+            }
+
+            if (_logoIcon != null) {
+                float target = _logoIcon.MouseOver ? 1f : _logoOpacity.Value;
+                if (Math.Abs(_logoIcon.Opacity - target) > 0.001f) {
+                    _logoIcon.Opacity = target;
+                }
+
+                if (!_logoIcon.Visible) _logoIcon.Visible = true;
+            }
+        }
+
+        private void CreateLogoIcon() {
+            try {
+                if (_logoTexture == null) {
+                    _logoTexture = LoadLogoTexture();
+                }
+
+                _logoIcon = new CornerIcon {
+                    Icon = _logoTexture,
+                    BasicTooltipText = "Open Blish HUD settings",
+                    Priority = 1000
+                };
+                _logoIcon.Click += OnLogoClicked;
+            } catch (Exception ex) {
+                _logoFailed = true;
+                Logger.Warn(ex, "Could not create the logo icon.");
+            }
+        }
+
+        // The logo is embedded in the module's DLL as "logo.png". Replace logo.png in the project to change it.
+        private static Texture2D LoadLogoTexture() {
+            using (var stream = typeof(HideCornerIconsModule).Assembly.GetManifestResourceStream("logo.png")) {
+                if (stream == null) throw new FileNotFoundException("Embedded logo.png not found.");
+
+                var tex = Texture2D.FromStream(GameService.Graphics.GraphicsDevice, stream);
+
+                // Blish HUD draws with premultiplied alpha, so convert to avoid pale edges.
+                var data = new Color[tex.Width * tex.Height];
+                tex.GetData(data);
+                for (int i = 0; i < data.Length; i++) {
+                    data[i] = Color.FromNonPremultiplied(data[i].R, data[i].G, data[i].B, data[i].A);
+                }
+                tex.SetData(data);
+
+                return tex;
+            }
+        }
+
+        private void OnLogoClicked(object sender, Blish_HUD.Input.MouseEventArgs e) {
+            OpenBlishSettings();
+        }
+
+        // Opens the main Blish HUD window on its Settings tab. Uses reflection so a name that differs between
+        // Blish HUD versions logs a message instead of stopping the module from loading.
+        private void OpenBlishSettings() {
+            try {
+                var overlay = GameService.Overlay;
+                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+                object window = overlay.GetType().GetProperty("BlishHudWindow", flags)?.GetValue(overlay);
+                if (window == null) {
+                    Logger.Warn("GameService.Overlay.BlishHudWindow was not found.");
+                    Notify("Could not open Blish HUD's window. Use its hotkey (Ctrl+Shift+B).");
+                    return;
+                }
+
+                object tab = overlay.GetType().GetProperty("SettingsTab", flags)?.GetValue(overlay);
+                if (tab != null) {
+                    var selected = window.GetType().GetProperty("SelectedTab", flags);
+                    if (selected != null && selected.CanWrite && selected.PropertyType.IsInstanceOfType(tab)) {
+                        selected.SetValue(window, tab);
+                    }
+                } else {
+                    Logger.Info("Overlay.SettingsTab not found; opening the Blish HUD window on its current tab.");
+                }
+
+                var show = window.GetType().GetMethod("Show", flags, null, Type.EmptyTypes, null);
+                if (show == null) {
+                    Logger.Warn("Show() was not found on the Blish HUD window.");
+                    Notify("Could not open Blish HUD's window. Use its hotkey (Ctrl+Shift+B).");
+                    return;
+                }
+
+                show.Invoke(window, null);
+            } catch (Exception ex) {
+                Logger.Warn(ex, "Could not open the Blish HUD settings.");
+                Notify("Could not open Blish HUD's window. Use its hotkey (Ctrl+Shift+B).");
+            }
+        }
+
+        private void DisposeLogoIcon() {
+            if (_logoIcon == null) return;
+
+            _logoIcon.Click -= OnLogoClicked;
+            _logoIcon.Dispose();
+            _logoIcon = null;
         }
 
         // =====================================================================
@@ -356,6 +492,10 @@ namespace HideCornerIcons {
         }
 
         protected override void Unload() {
+            DisposeLogoIcon();
+            _logoTexture?.Dispose();
+            _logoTexture = null;
+
             if (_toggleKey != null) {
                 _toggleKey.Value.Activated -= OnToggleKey;
                 _toggleKey.Value.Enabled = false;
