@@ -26,3 +26,6 @@ restart Blish HUD, and enable it under Manage Modules.
 1. Create a new GitHub repo and upload the contents of this folder (including `.github`).
 2. Open the repo's **Actions** tab, wait for "Build module" to finish (or click Run workflow).
 3. Download the `HideCornerIcons.bhm` artifact from the finished run and install it as above.
+
+## v1.3.0
+- Removed the "pick an element to hide" feature (tickbox, pick hotkey and on-screen picker) because it could freeze the game. Corner icon hiding, fading, hover reveal and the logo icon are unchanged.
