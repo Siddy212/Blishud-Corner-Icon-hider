@@ -21,8 +21,8 @@ namespace HideCornerIcons {
     /// and can also hide other on-screen elements from other Blish HUD modules that you pick.
     /// Deliberately adds no UI of its own - everything lives on the module's settings page.
     /// </summary>
-    [Export(typeof(Module))]
-    public class HideCornerIconsModule : Module {
+    [Export(typeof(Blish_HUD.Modules.Module))]
+    public class HideCornerIconsModule : Blish_HUD.Modules.Module {
 
         private static readonly Logger Logger = Logger.GetLogger<HideCornerIconsModule>();
 
@@ -145,7 +145,7 @@ namespace HideCornerIcons {
             _pickKey.Value.Activated += OnPickKey;
             _pickNow.SettingChanged += OnPickNowChanged;
 
-            Notify("Hide Corner Icons 1.2.0 loaded.");
+            Notify("Hide Corner Icons 1.2.1 loaded.");
 
             base.OnModuleLoaded(e);
         }
@@ -284,7 +284,10 @@ namespace HideCornerIcons {
             using (var stream = typeof(HideCornerIconsModule).Assembly.GetManifestResourceStream("logo.png")) {
                 if (stream == null) throw new FileNotFoundException("Embedded logo.png not found.");
 
-                var tex = Texture2D.FromStream(GameService.Graphics.GraphicsDevice, stream);
+                Texture2D tex;
+                using (var ctx = GameService.Graphics.LendGraphicsDeviceContext()) {   // the graphics device must be borrowed, not read directly
+                    tex = Texture2D.FromStream(ctx.GraphicsDevice, stream);
+                }
 
                 // Blish HUD draws with premultiplied alpha, so convert to avoid pale edges.
                 var data = new Color[tex.Width * tex.Height];
