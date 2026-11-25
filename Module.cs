@@ -107,8 +107,6 @@ namespace HideCornerIcons {
             _toggleKey.Value.Enabled = true;
             _toggleKey.Value.Activated += OnToggleKey;
 
-            Notify("Hide Corner Icons 1.3.0 loaded.");
-
             base.OnModuleLoaded(e);
         }
 
